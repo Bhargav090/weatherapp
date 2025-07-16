@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:weatherapp/bloc/theme_event.dart';
 import 'package:weatherapp/bloc/weather_event.dart';
 import 'package:weatherapp/bloc/weather_state.dart';
@@ -23,6 +24,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final TextEditingController _controller = TextEditingController();
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
+  bool _isLoadingLocation = false;
 
   @override
   void initState() {
@@ -38,43 +40,248 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _loadInitialWeather() async {
-    bool serviceEnabled;
-    LocationPermission permission;
+    setState(() {
+      _isLoadingLocation = true;
+    });
 
-    // Check if location services are enabled----
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    // Check if location services are enabled
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      // Handle location services disabled----
-      context.read<WeatherBloc>().add(LoadRecentSearches());
+      setState(() {
+        _isLoadingLocation = false;
+      });
+      _showLocationServiceDialog();
       return;
     }
 
-    // Check location permissions
-    permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        // Handle permission denied
-        context.read<WeatherBloc>().add(LoadRecentSearches());
-        return;
-      }
+    // Check and request location permissions---
+    PermissionStatus permissionStatus = await Permission.location.status;
+    
+    if (permissionStatus.isDenied) {
+      permissionStatus = await Permission.location.request();
     }
 
-    if (permission == LocationPermission.deniedForever) {
-      // Handle permission permanently denied
-      context.read<WeatherBloc>().add(LoadRecentSearches());
+    if (permissionStatus.isDenied) {
+      setState(() {
+        _isLoadingLocation = false;
+      });
+      _showPermissionDeniedDialog();
+      return;
+    }
+
+    if (permissionStatus.isPermanentlyDenied) {
+      setState(() {
+        _isLoadingLocation = false;
+      });
+      _showPermissionDeniedForeverDialog();
       return;
     }
 
     // Get current position and fetch weather
-    try {
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-      context.read<WeatherBloc>().add(FetchWeatherByLocation(position.latitude, position.longitude));
-    } catch (e) {
+    if (permissionStatus.isGranted) {
+      try {
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        context.read<WeatherBloc>().add(FetchWeatherByLocation(position.latitude, position.longitude));
+      } catch (e) {
+        context.read<WeatherBloc>().add(LoadRecentSearches());
+      } finally {
+        setState(() {
+          _isLoadingLocation = false;
+        });
+      }
+    } else {
+      setState(() {
+        _isLoadingLocation = false;
+      });
       context.read<WeatherBloc>().add(LoadRecentSearches());
     }
+  }
+
+  void _showLocationServiceDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        final isDarkMode = context.watch<ThemeBloc>().state.isDarkMode;
+        return AlertDialog(
+          backgroundColor: isDarkMode ? Colors.grey[800] : Colors.white,
+          title: Row(
+            children: [
+              Icon(
+                Icons.location_off,
+                color: Colors.orange,
+                size: 24,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Location Services Disabled',
+                style: TextStyle(
+                  color: isDarkMode ? Colors.white : Colors.black87,
+                  fontSize: 18,
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            'Please enable location services to get weather data for your current location.',
+            style: TextStyle(
+              color: isDarkMode ? Colors.grey[300] : Colors.grey[700],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                context.read<WeatherBloc>().add(LoadRecentSearches());
+              },
+              child: Text(
+                'Skip',
+                style: TextStyle(
+                  color: Colors.grey[600],
+                ),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await Geolocator.openLocationSettings();
+                // Retry after user potentially enables location----
+                Future.delayed(const Duration(seconds: 2), () {
+                  _loadInitialWeather();
+                });
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showPermissionDeniedDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        final isDarkMode = context.watch<ThemeBloc>().state.isDarkMode;
+        return AlertDialog(
+          backgroundColor: isDarkMode ? Colors.grey[800] : Colors.white,
+          title: Row(
+            children: [
+              Icon(
+                Icons.location_disabled,
+                color: Colors.red,
+                size: 24,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Location Permission Denied',
+                style: TextStyle(
+                  color: isDarkMode ? Colors.white : Colors.black87,
+                  fontSize: 18,
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            'Location permission is required to get weather data for your current location.',
+            style: TextStyle(
+              color: isDarkMode ? Colors.grey[300] : Colors.grey[700],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                context.read<WeatherBloc>().add(LoadRecentSearches());
+              },
+              child: Text(
+                'Skip',
+                style: TextStyle(
+                  color: Colors.grey[600],
+                ),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _loadInitialWeather(); // Retry permission request
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Try Again'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showPermissionDeniedForeverDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        final isDarkMode = context.watch<ThemeBloc>().state.isDarkMode;
+        return AlertDialog(
+          backgroundColor: isDarkMode ? Colors.grey[800] : Colors.white,
+          title: Row(
+            children: [
+              Icon(
+                Icons.location_disabled,
+                color: Colors.red,
+                size: 24,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Location Permission Required',
+                style: TextStyle(
+                  color: isDarkMode ? Colors.white : Colors.black87,
+                  fontSize: 18,
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            'Location permission has been permanently denied. Please enable it in app settings to get weather data for your current location.',
+            style: TextStyle(
+              color: isDarkMode ? Colors.grey[300] : Colors.grey[700],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                context.read<WeatherBloc>().add(LoadRecentSearches());
+              },
+              child: Text(
+                'Skip',
+                style: TextStyle(
+                  color: Colors.grey[600],
+                ),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await openAppSettings();
+                context.read<WeatherBloc>().add(LoadRecentSearches());
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -184,8 +391,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                             color: Colors.blue,
                             borderRadius: BorderRadius.circular(basePadding * 0.625),
                           ),
-
-
                           child: Icon(
                             Icons.arrow_forward,
                             color: Colors.white,
@@ -205,151 +410,153 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 SizedBox(height: basePadding),
 
                 // Weather Content
-                BlocBuilder<WeatherBloc, WeatherState>(
-                  builder: (context, state) {
-                    if (state is WeatherLoading) {
-                      return const LoadingShimmer();
-                    } else if (state is WeatherLoaded) {
-                      _animationController.forward();
-                      return Column(
-                        children: [
-                          FadeTransition(
-                            opacity: _fadeAnimation,
-                            child: WeatherCard(
-                              weather: state.weather,
-                              onTap: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => DetailScreen(weather: state.weather),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                          SizedBox(height: basePadding),
-                          if (state.recentSearches.isNotEmpty)
-                            RecentSearches(
-                              recentSearches: state.recentSearches,
-                              onClear: () {
-                                context.read<WeatherBloc>().add(ClearRecentSearches());
-                              },
-                              onSearchTap: (weather) {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => DetailScreen(weather: weather),
-                                  ),
-                                );
-                              },
-                            ),
-                        ],
-                      );
-                    } else if (state is WeatherError) {
-                      return Column(
-                        children: [
-                          Container(
-                            padding: EdgeInsets.all(basePadding * 1.25),
-                            decoration: BoxDecoration(
-                              color: Colors.red.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(basePadding * 0.9375),
-                              border: Border.all(color: Colors.red.withOpacity(0.3)),
-                            ),
-                            child: Column(
+                _isLoadingLocation
+                    ? const LoadingShimmer()
+                    : BlocBuilder<WeatherBloc, WeatherState>(
+                        builder: (context, state) {
+                          if (state is WeatherLoading) {
+                            return const LoadingShimmer();
+                          } else if (state is WeatherLoaded) {
+                            _animationController.forward();
+                            return Column(
                               children: [
-                                Icon(
-                                  Icons.error_outline,
-                                  color: Colors.red,
-                                  size: baseFontSize * 2.4,
-                                ),
-                                SizedBox(height: basePadding * 0.75),
-                                Text(
-                                  'Oops!',
-                                  style: TextStyle(
-                                    fontSize: baseFontSize * 0.9,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.red,
+                                FadeTransition(
+                                  opacity: _fadeAnimation,
+                                  child: WeatherCard(
+                                    weather: state.weather,
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => DetailScreen(weather: state.weather),
+                                        ),
+                                      );
+                                    },
                                   ),
                                 ),
-                                SizedBox(height: basePadding * 0.5),
-                                Text(
-                                  state.message.replaceAll('Exception: ', ''),
-                                  style: TextStyle(
-                                    fontSize: baseFontSize * 0.7,
-                                    color: Colors.red[700],
+                                SizedBox(height: basePadding),
+                                if (state.recentSearches.isNotEmpty)
+                                  RecentSearches(
+                                    recentSearches: state.recentSearches,
+                                    onClear: () {
+                                      context.read<WeatherBloc>().add(ClearRecentSearches());
+                                    },
+                                    onSearchTap: (weather) {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => DetailScreen(weather: weather),
+                                        ),
+                                      );
+                                    },
                                   ),
-                                  textAlign: TextAlign.center,
-                                ),
                               ],
-                            ),
-                          ),
-                          SizedBox(height: basePadding),
-                          if (state.recentSearches.isNotEmpty)
-                            RecentSearches(
-                              recentSearches: state.recentSearches,
-                              onClear: () {
-                                context.read<WeatherBloc>().add(ClearRecentSearches());
-                              },
-                              onSearchTap: (weather) {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => DetailScreen(weather: weather),
-                                  ),
-                                );
-                              },
-                            ),
-                        ],
-                      );
-                    } else if (state is RecentSearchesLoaded) {
-                      return state.recentSearches.isNotEmpty
-                          ? RecentSearches(
-                              recentSearches: state.recentSearches,
-                              onClear: () {
-                                context.read<WeatherBloc>().add(ClearRecentSearches());
-                              },
-                              onSearchTap: (weather) {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => DetailScreen(weather: weather),
-                                  ),
-                                );
-                              },
-                            )
-                          : Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.wb_sunny,
-                                    size: baseFontSize * 4,
-                                    color: Colors.grey[400],
-                                  ),
-                                  SizedBox(height: basePadding),
-                                  Text(
-                                    'Welcome to Weather App!',
-                                    style: TextStyle(
-                                      fontSize: baseFontSize * 1.2,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.grey[600],
-                                    ),
-                                  ),
-                                  SizedBox(height: basePadding * 0.5),
-                                  Text(
-                                    'Search for a city to get started',
-                                    style: TextStyle(
-                                      fontSize: baseFontSize * 0.8,
-                                      color: Colors.grey[500],
-                                    ),
-                                  ),
-                                ],
-                              ),
                             );
-                    }
-                    return const SizedBox();
-                  },
-                ),
+                          } else if (state is WeatherError) {
+                            return Column(
+                              children: [
+                                Container(
+                                  padding: EdgeInsets.all(basePadding * 1.25),
+                                  decoration: BoxDecoration(
+                                    color: Colors.red.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(basePadding * 0.9375),
+                                    border: Border.all(color: Colors.red.withOpacity(0.3)),
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      Icon(
+                                        Icons.error_outline,
+                                        color: Colors.red,
+                                        size: baseFontSize * 2.4,
+                                      ),
+                                      SizedBox(height: basePadding * 0.75),
+                                      Text(
+                                        'Oops!',
+                                        style: TextStyle(
+                                          fontSize: baseFontSize * 0.9,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.red,
+                                        ),
+                                      ),
+                                      SizedBox(height: basePadding * 0.5),
+                                      Text(
+                                        state.message.replaceAll('Exception: ', ''),
+                                        style: TextStyle(
+                                          fontSize: baseFontSize * 0.7,
+                                          color: Colors.red[700],
+                                        ),
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                SizedBox(height: basePadding),
+                                if (state.recentSearches.isNotEmpty)
+                                  RecentSearches(
+                                    recentSearches: state.recentSearches,
+                                    onClear: () {
+                                      context.read<WeatherBloc>().add(ClearRecentSearches());
+                                    },
+                                    onSearchTap: (weather) {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => DetailScreen(weather: weather),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                              ],
+                            );
+                          } else if (state is RecentSearchesLoaded) {
+                            return state.recentSearches.isNotEmpty
+                                ? RecentSearches(
+                                    recentSearches: state.recentSearches,
+                                    onClear: () {
+                                      context.read<WeatherBloc>().add(ClearRecentSearches());
+                                    },
+                                    onSearchTap: (weather) {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => DetailScreen(weather: weather),
+                                        ),
+                                      );
+                                    },
+                                  )
+                                : Center(
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.wb_sunny,
+                                          size: baseFontSize * 4,
+                                          color: Colors.grey[400],
+                                        ),
+                                        SizedBox(height: basePadding),
+                                        Text(
+                                          'Welcome to Weather App!',
+                                          style: TextStyle(
+                                            fontSize: baseFontSize * 1.2,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.grey[600],
+                                          ),
+                                        ),
+                                        SizedBox(height: basePadding * 0.5),
+                                        Text(
+                                          'Search for a city to get started',
+                                          style: TextStyle(
+                                            fontSize: baseFontSize * 0.8,
+                                            color: Colors.grey[500],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                          }
+                          return const SizedBox();
+                        },
+                      ),
               ],
             ),
           ),

@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:weatherapp/bloc/theme_event.dart';
 import 'package:weatherapp/bloc/theme_state.dart';
+import 'package:weatherapp/widgets/nointernet.dart';
 import 'screens/home_screen.dart';
 import 'bloc/weather_bloc.dart';
 import 'bloc/theme_bloc.dart';
@@ -58,7 +59,9 @@ class MyApp extends StatelessWidget {
               scaffoldBackgroundColor: const Color(0xFF1A1A1A),
             ),
             themeMode: state.isDarkMode ? ThemeMode.dark : ThemeMode.light,
-            home: const HomeScreen(),
+            home: const NoInternetWidget(
+              child: HomeScreen(),
+            ),
           );
         },
       ),
